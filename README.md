@@ -3,5 +3,5 @@ Optical Flow Estimation Using VideoFlow on our Custom Dataset generated using Ku
 My Contributions to this project is as follows:
 - Dataset Generation
 - Customized Dataset Loader
-- Model Fine-Tuning:
-- Model Evaluation:
+- Model Fine-Tuning
+- Model Evaluation
