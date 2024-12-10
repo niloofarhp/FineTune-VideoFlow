@@ -10,15 +10,16 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from core.utils.misc import process_cfg
-from utils import flow_viz
-
+from core.utils import flow_viz
+import torchvision.transforms as T
 from core.Networks import build_network
 
-from utils import frame_utils
-from utils.utils import InputPadder, forward_interpolate
+from core.utils import frame_utils
+from core.utils.utils import InputPadder, forward_interpolate
 import itertools
 import imageio
 
+transform = T.Resize(size=(256,256))
 def prepare_image(seq_dir):
     print(f"preparing image...")
     print(f"Input image sequence dir = {seq_dir}")
@@ -31,6 +32,7 @@ def prepare_image(seq_dir):
         img = Image.open(os.path.join(seq_dir, fn))
         img = np.array(img).astype(np.uint8)[..., :3]
         img = torch.from_numpy(img).permute(2, 0, 1).float()
+        #img = transform(img)
         images.append(img)
     
     return torch.stack(images)
@@ -85,9 +87,9 @@ def count_parameters(model):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', default='MOF')
-    parser.add_argument('--seq_dir', default='default')
-    parser.add_argument('--vis_dir', default='default')
+    parser.add_argument('--mode', default='BOF')
+    parser.add_argument('--seq_dir', default='/home/ethan/Documents/Niloofar/Projects/VideoFlow/demo_input_images/')
+    parser.add_argument('--vis_dir', default='/home/ethan/Documents/Niloofar/Projects/VideoFlow/demo_flow_vis_temp/')
     
     args = parser.parse_args()
 

@@ -9,6 +9,8 @@ import random
 from glob import glob
 import os.path as osp
 
+from PIL import Image
+
 from .utils import frame_utils
 from .utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 from torchvision.utils import save_image
@@ -17,7 +19,123 @@ from .utils import flow_viz
 import cv2
 from .utils.utils import coords_grid, bilinear_sampler
 
+# from utils import frame_utils
+# from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
+# from torchvision.utils import save_image
+
+# from utils import flow_viz
+# import cv2
+# from utils.utils import coords_grid, bilinear_sampler
+
+
 import copy
+
+import os
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+
+import tensorflow_datasets as tfds
+
+from typing import Tuple
+
+PROJECT_ROOT_DIR = '/home/ethan/Documents/Niloofar/Projects/VideoFlow/outputRes'
+        
+def save_fig(
+        fig_id: plt.figure,
+        fig_name: str, 
+        fig_dir: str = '', 
+        tight_layout: bool = True
+):
+    # create the directory if it does not exist
+    img_dir = os.path.join(PROJECT_ROOT_DIR, "images", fig_dir)
+    if not os.path.exists(img_dir):
+        os.makedirs(img_dir)
+    path = os.path.join(img_dir, fig_name + ".png")
+    print("Saving figure", fig_name)
+    if tight_layout:
+        fig_id.tight_layout()
+    fig_id.savefig(path, format='png', dpi=300)
+
+
+def get_video_names(
+    metadata: dict): #-> tuple[str, str] :
+    video_name = metadata['video_name'].numpy().decode('UTF-8')
+    print("Video: ", video_name)
+    video_type = metadata['video_type'].numpy().decode('UTF-8')
+    print("Video type: ", video_type)
+    return video_name, video_type
+
+
+def get_scale_offset(
+    metadata: dict, 
+    imgdata: str = 'forward_flow',
+): #-> tuple[float, float] : 
+    i_range = metadata[imgdata + '_range'].numpy()
+    print("{0} range {1} to {2}".format(imgdata,
+                                        i_range[0],
+                                        i_range[1]))
+    i_scale =  ( i_range[1] - i_range[0] ) / 65535.0
+    i_offset = i_range[0]
+    return i_scale, i_offset
+
+
+def flow_quiver(
+    ax : plt.Axes,
+    flow : np.ndarray,
+    x_mesh : np.ndarray = np.empty(1),
+    y_mesh : np.ndarray = np.empty(1),        
+    n_arrows: int = 32,
+    img_size: int = 256
+) :
+    if (x_mesh.shape[0] < math.floor(img_size/n_arrows) or
+            y_mesh.shape[0] < math.floor(img_size/n_arrows)) :
+        x_mesh, y_mesh = np.meshgrid(np.linspace(0, img_size, n_arrows),
+                           np.linspace(0, img_size, n_arrows))
+
+    # quiver has origin at lower left corner, offsets are x=col, y=-row
+    res_quiver = ax.quiver(
+        x_mesh, -y_mesh,
+        flow[0: img_size: int(img_size / n_arrows),
+         0: img_size: int(img_size / n_arrows),
+         1],
+        -flow[0: img_size: int(img_size / n_arrows),
+         0: img_size: int(img_size / n_arrows),
+         0],
+         angles='xy')    
+    return res_quiver, x_mesh, y_mesh
+
+
+def find_occurences( 
+        asset_ids: list,
+        name: str = 'bar' 
+):# -> list :
+    res = list()
+    for i, aid in enumerate(asset_ids):
+        if name == aid.numpy().decode('UTF-8'):
+            res.append(i)
+    return res
+
+
+def get_bar_mask(
+    segmentation: np.ndarray,
+    bar_ids: list
+) -> np.ndarray:
+    mask = np.ones(segmentation.shape)
+    if len(bar_ids) != 0:
+        for id in bar_ids:
+            # add 1 because background id is 0
+            mask = np.logical_and(mask, (segmentation != id+1))
+    return mask
+
+
+def get_fg_bg_mask( 
+            segmentation : np.ndarray,
+            mask : np.ndarray 
+): #-> tuple[ np.ndarray, np.ndarray ]:
+    bg_mask = np.logical_and((segmentation == 0), mask)  # background id is 0
+    fg_mask = np.logical_and((segmentation > 0), mask)
+    return fg_mask, bg_mask
 
 class FlowDataset(data.Dataset):
     def __init__(self, aug_params=None, sparse=False, oneside=False, reverse_rate=0.3):
@@ -114,8 +232,12 @@ class FlowDataset(data.Dataset):
         img2 = torch.from_numpy(img2).permute(2, 0, 1).float()
         img3 = torch.from_numpy(img3).permute(2, 0, 1).float()
         
+        
+        
         flow1 = torch.from_numpy(flow1).permute(2, 0, 1).float()
-        flow2 = torch.from_numpy(flow2).permute(2, 0, 1).float()
+        flow1 = torch.from_numpy(np.stack([(flow1)[1,:,:],(flow1)[0,:,:]], axis=0))
+        flow2 = torch.from_numpy(-flow2).permute(2, 0, 1).float()
+        flow2 = torch.from_numpy(np.stack([flow2[1,:,:],(flow2)[0,:,:]], axis=0))
 
         if valid1 is not None and valid2 is not None:
             valid1 = torch.from_numpy(valid1)
@@ -152,6 +274,114 @@ class FlyingThings3D(FlowDataset):
             for flow1, flow2 in zip(flows[0::2], flows[1::2]):
                 self.flow_list.append([root+flow1.strip(), root+flow2.strip()])
 
+class Kubric(FlowDataset):
+    def __init__(self, aug_params=None, split='training', root='/home/ethan/Documents/Niloofar/Projects/VideoFlow/datasets/kubric', dstype='clean', reverse_rate=0.3):
+        super(Kubric, self).__init__(aug_params, oneside=False, reverse_rate=reverse_rate)
+        # #this dataset contains tf records for each video samples
+        # if split == 'training': 
+        #     foldernamefull = '/home/ethan/tensorflow_datasets/flow_data_set_builder/'
+        #     foldername = 'flow_data_set_builder/' #/home/niloofarhp/tensorflow_datasets/
+        # else:
+        #     foldernamefull = '/home/ethan/tensorflow_datasets/flow_data_set_builder/'
+        #     foldername = 'flow_data_set_builder/'   
+        # for vid_sample in os.listdir(foldernamefull):
+        #     if vid_sample == '.config':# or ('bar' in vid_sample) :
+        #         continue
+        #     flow_data_set = tfds.load(foldername+vid_sample, with_info=True)[0]
+        #     m_iter = iter(flow_data_set['train'])
+        #     #print('len of the videos:', len(flow_data_set['train']))
+        #     for i in range(len(flow_data_set['train'])): 
+        #         #extract imgs and flow files 
+        #         train_data = next(m_iter)
+        #         video_name = train_data['metadata']['video_name'].numpy().decode('UTF-8')
+        #         video_type = train_data['metadata']['video_type'].numpy().decode('UTF-8')
+        #         if 'bar' in video_type:
+        #             print('skipping videos containing bar:', video_type)
+        #             continue
+        #         forward_flow_range = train_data['metadata']['forward_flow_range'].numpy()
+        #         f_scale =  (forward_flow_range[1] - forward_flow_range[0] ) / 65535.0
+        #         f_offset = forward_flow_range[0]
+        #         bf_scale, bf_offset = get_scale_offset( train_data['metadata'],imgdata='backward_flow' )
+        #         bar_ids = find_occurences(train_data['instances']['asset_id'])
+        #         num_frames = int(train_data['metadata']['num_frames'])
+        #         if not (os.path.exists(root+'/'+split+'/clean/'+video_type)):
+        #             path = os.path.join(root+'/'+split+'/clean/',video_type)
+        #             os.mkdir(path)
+        #         if not (os.path.exists(root+'/'+split+'/flow/'+video_type)):
+        #             path = os.path.join(root+'/'+split+'/flow/',video_type)
+        #             os.mkdir(path)
+                                    
+        #         if not (os.path.exists(root+'/'+split+'/clean/'+video_type+'/'+video_name)):
+        #             path = os.path.join(root+'/'+split+'/clean/',video_type+'/'+video_name)
+        #             os.mkdir(path)
+        #         if not (os.path.exists(root+'/'+split+'/flow/'+video_type+'/'+video_name)):
+        #             os.mkdir(os.path.join(root+'/'+split+'/flow/',video_type+'/'+video_name))
+                    
+        #         img_path = root+'/'+split+'/clean/'+video_type+'/'+video_name
+        #         flow_path = root+'/'+split+'/flow/'+video_type+'/'+video_name
+        #         for i in range(num_frames - 1):
+        #             img1 = train_data['video'][i, :, :, :]
+        #             img2 = train_data['video'][i+1, :, :, :]
+        #             forward_flow = train_data['forward_flow'][i, :, :, :].numpy()
+        #             forward_flow = f_scale * forward_flow + f_offset
+        #             segmentation = train_data['segmentations'][i,:,:,:].numpy()
+        #             mask = get_bar_mask( segmentation, bar_ids )
+        #             #forward_flow = forward_flow * mask
+        #             backward_flow = train_data['backward_flow'][i, :, :, :].numpy()
+        #             backward_flow = bf_scale * backward_flow + bf_offset
+        #             backward_flow = backward_flow 
+                    
+        #             if not(os.path.exists(img_path+'/frame_{:02d}.png'.format(i))):
+        #                 img = Image.fromarray(img1.numpy())
+        #                 img.save(img_path+'/frame_{:02d}.png'.format(i))
+        #             if not (os.path.exists(flow_path+'/frame_{:02d}.flo'.format(i))):
+        #                 frame_utils.writeFlow(flow_path+'/frame_{:02d}.flo'.format(i), forward_flow)
+        #             if not (os.path.exists(flow_path+'/bframe_{:02d}.flo'.format(i))):
+        #                 frame_utils.writeFlow(flow_path+'/bframe_{:02d}.flo'.format(i), backward_flow)                        
+        #             #if not(os.path.exists(flow_path+'/frame_{:02d}.npy'.format(i))):
+        #                 #np.save(flow_path+'/frame_{:02d}.npy'.format(i), mask)
+                        
+
+        # flow_root = osp.join(root, split, 'flow')
+        # image_root = osp.join(root, split, 'clean')
+        # imgFile = open("/home/ethan/Documents/Niloofar/Projects/VideoFlow/datasets/kubric_images_png.txt", "a")
+        # floFile = open("/home/ethan/Documents/Niloofar/Projects/VideoFlow/datasets/kubric_images_bfflo.txt", "a")
+        # for scene in os.listdir(image_root):
+        #     for sub_scene in os.listdir(image_root+'/'+scene):
+                
+        #         image_list = sorted(glob(osp.join(image_root, scene, sub_scene, '*.png')))
+        #         flow_list = sorted(glob(osp.join(flow_root, scene, sub_scene, '*.flo')))
+        #         bflow_list = sorted(glob(osp.join(flow_root, scene, sub_scene, 'b*.flo')))
+        #         for i in range(len(image_list)-2):
+        #             self.image_list += [ [image_list[i], image_list[i+1], image_list[i+2]] ]
+        #             imgFile.write(image_list[i]+','+ image_list[i+1]+','+ image_list[i+2] +'\n')
+        #             self.extra_info += [ (scene+'_'+sub_scene, i) ] # scene and frame_id
+        #             self.flow_list += [[flow_list[i+1],bflow_list[i+1]]]
+        #             floFile.write(flow_list[i+1]+','+bflow_list[i+1]+'\n')
+        #         #self.flow_list += sorted(glob(osp.join(flow_root, scene, sub_scene, '*.flo')))
+        #         #self.mask_list += sorted(glob(osp.join(flow_root, scene, sub_scene, '*.npy')))
+        # imgFile.close()
+        # floFile.close()     
+        imgFile = open("/home/ethan/Documents/Niloofar/Projects/VideoFlow/datasets/kubric_images_png.txt", "r")
+        floFile = open("/home/ethan/Documents/Niloofar/Projects/VideoFlow/datasets/kubric_images_bfflo.txt", "r")
+        count = 0
+        for line in imgFile:
+            img1, img2 ,img3 = line.split(',')
+            self.image_list += [[img1,img2,img3[:-1]]]
+            self.extra_info += [ (img1.split('/')[-2]+'_'+img1.split('/')[-1], count) ] # scene and frame_id
+            count +=1
+            #print(line.strip())
+        for line in floFile:
+            flo1, flo2 = line.split(',')
+            self.flow_list += [[flo1, flo2[:-1]]]
+            #print(line.strip())                
+                
+        imgFile.close()
+        floFile.close()
+        print('3-frame image list lenght', len(self.image_list))
+        print('bidirectional flow list lenght', len(self.flow_list))                
+        print('') 
+        
 class MpiSintel(FlowDataset):
     def __init__(self, aug_params=None, split='training', root='datasets/Sintel', dstype='clean', reverse_rate=0.3):
         super(MpiSintel, self).__init__(aug_params, oneside=True, reverse_rate=reverse_rate)
@@ -259,12 +489,70 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     elif args.stage == 'kitti':
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
         train_dataset = KITTI(aug_params, split='training')
+    elif args.stage == 'kubric':
+        aug_params = None #{'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
+        train_dataset = Kubric(aug_params, split='training')        
+        print(len(train_dataset))
+        train_size = int(0.7 * len(train_dataset))
+        test_size = len(train_dataset) - train_size
+        indices = []
+        train_indices = []
+        for i in range(int(len(train_dataset)/23)):
+            k = i*23
+            for j in range(k,k+24):
+                if i % 2 == 0:
+                    train_indices.append(j)
+                else:
+                    indices.append(j) #train_indices.append(j)
+        print(len(train_indices))
+        train_indices = train_indices[:]
+        print(len(indices))
+        indices = indices[:]
+        #temp_indices = 
+        test_indices = indices[len(indices)//2:]
+        indices = indices[:len(indices)//2]            
+        train_dataset_new = torch.utils.data.Subset(train_dataset,(train_indices))
+        val_dataset = torch.utils.data.Subset(train_dataset,(indices))
+        test_dataset = torch.utils.data.Subset(train_dataset,(test_indices))
+        #train_dataset, val_dataset = torch.utils.data.random_split(train_dataset,[train_size, test_size])
+        print('Training with %d image pairs' % len(train_dataset_new))
+        print('Validating with %d image pairs' % len(val_dataset))
+        print('Testing with %d image pairs' % len(test_dataset))
+        train_loader = data.DataLoader(train_dataset_new, batch_size=args.batch_size,shuffle=True, drop_last=True)#, pin_memory=True,  num_workers=2)
+        
+        return train_loader, train_dataset_new, val_dataset, test_dataset       
 
     train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, 
-        pin_memory=False, shuffle=True, num_workers=args.batch_size*2, drop_last=True)
+        pin_memory=False, shuffle=True,drop_last=True)# num_workers=args.batch_size*2, drop_last=True)
 
     print('Training with %d image pairs' % len(train_dataset))
     return train_loader
 
+import argparse
+import sys
+sys.path.append('/home/ethan/Documents/Niloofar/Projects/VideoFlow')
+import configs
+from core.utils.misc import process_cfg
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--name', default='BOFTrainKubric', help="name your experiment")
+    parser.add_argument('--stage', default='kubric') 
+    parser.add_argument('--validation', type=str, nargs='+')
+
+    args = parser.parse_args()
+
+    if args.stage == 'things':
+        from configs.things import get_cfg    
+    elif args.stage == 'sintel':
+        from configs.sintel import get_cfg
+    elif args.stage == 'kitti':
+        from configs.kitti import get_cfg
+    elif args.stage == 'kubric':
+        from configs.kubric import get_cfg
+    cfg = get_cfg()
+    cfg.update(vars(args))
+    process_cfg(cfg)        
+    fetch_dataloader(cfg)
+
 if __name__ == "__main__":
-    return
+    main()

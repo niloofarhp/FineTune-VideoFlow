@@ -11,17 +11,65 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from configs.sintel_submission import get_cfg
 from core.utils.misc import process_cfg
-from utils import flow_viz
+from core.utils import flow_viz
 import core.datasets_3frames as datasets
 from core import datasets_multiframes
 
 from core.Networks import build_network
 
-from utils import frame_utils
-from utils.utils import InputPadder, forward_interpolate
+from core.utils import frame_utils
+from core.utils.utils import InputPadder, forward_interpolate
 import itertools
 
+def plot_3frame_Res(filename, images, bflow,bflow_gt,fflow,fflow_gt):
+    n_cols = 5
+    fig, axs = plt.subplots(2, n_cols, figsize=(15, 10))
+    im1 = (images[0][0]).permute(1,2,0).cpu().numpy().astype(np.uint8)
+    axs[0, 0].imshow(im1)
+    axs[0, 0].axis("off")
+    im1 = (images[0][0]).permute(1,2,0).cpu().numpy().astype(np.uint8)
+    axs[1, 0].imshow(im1)
+    axs[1, 0].axis("off")              
+    
+    #convert flow to image
+    #flow_pred = np.stack([(bflow.permute(1,2,0))[:,:,1],(bflow.permute(1,2,0))[:,:,0]], axis=-1)
+    flow_pred = bflow.permute(1,2,0).numpy()
+    predflow_color = flow_viz.flow_to_image(flow_pred, convert_to_bgr=False)
+    axs[0, 1].imshow(predflow_color)
+    axs[0, 1].axis("off")                        
+    #flow_pred = np.stack([(bflow_gt.permute(1,2,0))[:,:,1],(bflow_gt.permute(1,2,0))[:,:,0]], axis=-1)
+    flow_pred = bflow_gt.permute(1,2,0).numpy()
+    predflow_color = flow_viz.flow_to_image(flow_pred, convert_to_bgr=False)
+    axs[1, 1].imshow(predflow_color)
+    axs[1, 1].axis("off") 
+    
+    im2 = images[0][1].permute(1,2,0).cpu().numpy().astype(np.uint8)
+    axs[0, 2].imshow(im2)
+    axs[0, 2].axis("off")
+    im2 = images[0][1].permute(1,2,0).cpu().numpy().astype(np.uint8)
+    axs[1, 2].imshow(im2)
+    axs[1, 2].axis("off")            
+                    
+    #flow_pred = np.stack([(fflow.permute(1,2,0))[:,:,1],(fflow.permute(1,2,0))[:,:,0]], axis=-1)
+    flow_pred = fflow.permute(1,2,0).numpy() 
+    predflow_color = flow_viz.flow_to_image(flow_pred, convert_to_bgr=False)
+    axs[0, 3].imshow(predflow_color)
+    axs[0, 3].axis("off")
 
+    #flow_pred = np.stack([(fflow_gt.permute(1,2,0))[:,:,1],(fflow_gt.permute(1,2,0))[:,:,0]], axis=-1)
+    flow_pred = fflow_gt.permute(1,2,0).numpy()
+    predflow_color = flow_viz.flow_to_image(flow_pred, convert_to_bgr=False)
+    axs[1, 3].imshow(predflow_color)
+    axs[1, 3].axis("off")            
+
+    im3 = images[0][2].permute(1,2,0).cpu().numpy().astype(np.uint8)
+    axs[0, 4].imshow(im3)
+    axs[0, 4].axis("off")
+    im3 = images[0][2].permute(1,2,0).cpu().numpy().astype(np.uint8)
+    axs[1, 4].imshow(im3)
+    axs[1, 4].axis("off")                    
+
+    plt.savefig(str(filename)+'.png')    
 @torch.no_grad()
 def create_sintel_submission(model, output_path='output'):
     """ Create submission for the Sintel leaderboard """
@@ -62,6 +110,61 @@ def create_sintel_submission(model, output_path='output'):
             frame_utils.writeFlow(output_file, flow)
 
     return results
+
+@torch.no_grad()
+def validate_kubric(model,val_dataset):
+    """ Peform validation using the Kubric (train) split """
+    #val_dataset = datasets.Kubric(split='training', dstype='clean', reverse_rate=-1)
+    model.eval()
+    dstype = 'clean'
+    fresults = {}
+    frecords = []
+    fepe_list = []
+    
+    bresults = {}
+    brecords = []
+    bepe_list = []         
+    for val_id in range(len(val_dataset)):
+        if val_id % 50 == 0:
+            print(val_id)                
+        images, flows, valids = val_dataset[val_id]
+        images = images[None].cuda()
+        padder = InputPadder(images.shape)
+        images = padder.pad(images)
+        flow_pre, _ = model(images, {})
+        fbflow = padder.unpad(flow_pre[0]).cpu()
+        fflow_gt = flows[0]
+        #flow_pred = np.stack([(fflow_gt.permute(1,2,0))[:,:,1],(fflow_gt.permute(1,2,0))[:,:,0]], axis=-1)        
+        fepe = torch.sum((fbflow[0] - fflow_gt)**2, dim=0).sqrt() 
+        frecords.append("{}\n".format(torch.mean(fepe)))
+        fepe_list.append(fepe.view(-1).numpy())
+                       
+
+        bflow_gt = flows[1]        
+        bepe = torch.sum((fbflow[1] - bflow_gt)**2, dim=0).sqrt()
+        brecords.append("{}\n".format(torch.mean(bepe)))
+        bepe_list.append(bepe.view(-1).numpy())
+        # plot one sample with evaluated results
+
+        if val_id % 1000 == 0:
+            plot_3frame_Res('3framePlotRes'+str(val_id), images, fbflow[1],bflow_gt,fbflow[0],fflow_gt)
+        
+    bepe_all = np.concatenate(bepe_list)
+    bepe = np.mean(bepe_all)
+    bpx1 = np.mean(bepe_all<1)
+    bpx3 = np.mean(bepe_all<3)
+    bpx5 = np.mean(bepe_all<5)
+    
+    fepe_all = np.concatenate(fepe_list)
+    fepe = np.mean(fepe_all)
+    fpx1 = np.mean(fepe_all<1)
+    fpx3 = np.mean(fepe_all<3)
+    fpx5 = np.mean(fepe_all<5)    
+
+    print("Validation (%s) ForwardFlow EPE: %f, 1px: %f, 3px: %f, 5px: %f" % (dstype, fepe, fpx1, fpx3, fpx5))
+    fresults[dstype] = np.mean(fepe_list)
+    print("Validation (%s) BackwardFlow EPE: %f, 1px: %f, 3px: %f, 5px: %f" % (dstype, bepe, bpx1, bpx3, bpx5))
+    return fresults
 
 @torch.no_grad()
 def validate_sintel(model):
@@ -284,13 +387,14 @@ def count_parameters(model):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     #parser.add_argument('--model', help="restore checkpoint")
-    parser.add_argument('--dataset', help="dataset for evaluation")
+    parser.add_argument('--dataset', default='kubric', help="dataset for evaluation")
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
     parser.add_argument('--alternate_corr', action='store_true', help='use efficent correlation implementation')
     args = parser.parse_args()
     cfg = get_cfg()
     cfg.update(vars(args))
+    
 
     model = torch.nn.DataParallel(build_network(cfg))
     
@@ -308,6 +412,8 @@ if __name__ == '__main__':
     with torch.no_grad():
         if args.dataset == 'sintel':
             validate_sintel(model.module)
+        elif args.dataset == 'kubric':
+            validate_kubric(model.module)
         elif args.dataset == 'things':
             validate_things(model.module)
         elif args.dataset == 'kitti':

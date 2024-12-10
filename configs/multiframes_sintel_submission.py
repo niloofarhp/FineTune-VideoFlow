@@ -15,7 +15,7 @@ _CN.critical_params = []
 
 _CN.network = 'MOFNetStack'
 
-_CN.model = 'VideoFlow_ckpt/MOF_sintel.pth'
+_CN.model = '/home/ethan/Documents/Niloofar/Projects/VideoFlow/VideoFlow_ckpt/MOF_sintel.pth'
 _CN.input_frames = 5
 
 _CN.restore_ckpt = None

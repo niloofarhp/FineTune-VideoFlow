@@ -26,6 +26,8 @@ from core.utils.logger import Logger
 
 from core.Networks import build_network
 
+import evaluate_BOFNet as evalBOF
+
 try:
     from torch.cuda.amp import GradScaler
 except:
@@ -62,9 +64,9 @@ def train(cfg):
     model.cuda()
     model.train()
 
-    train_loader = datasets.fetch_dataloader(cfg)
+    train_loader, train_dataset_new, val_dataset, test_dataset= datasets.fetch_dataloader(cfg)
     optimizer, scheduler = fetch_optimizer(model, cfg.trainer)
-
+    res = evalBOF.validate_kubric(model.module, test_dataset)
     total_steps = 0
     scaler = GradScaler(enabled=cfg.mixed_precision)
     logger = Logger(model, scheduler, cfg)
@@ -98,10 +100,11 @@ def train(cfg):
                 # torch.save(model.state_dict(), PATH)
 
                 results = {}
-                for val_dataset in cfg.validation:
-                    if val_dataset == 'sintel_train':
-                        results.update(evaluate_tile.validate_sintel(model.module))
-
+                for val_data in cfg.validation:
+                    if val_data == 'sintel_train':
+                        results.update(evalBOF.validate_sintel(model.module))
+                    elif val_data == 'kubric':
+                        results.update(evalBOF.validate_kubric(model.module, val_dataset))
                 logger.write_dict(results)
                 
                 model.train()
@@ -120,9 +123,9 @@ def train(cfg):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', default='flowformer', help="name your experiment")
-    parser.add_argument('--stage', help="determines which dataset to use for training") 
-    parser.add_argument('--validation', type=str, nargs='+')
+    parser.add_argument('--name', default='BOFTrainKubric', help="name your experiment")
+    parser.add_argument('--stage',default='kubric', help="determines which dataset to use for training") 
+    parser.add_argument('--validation', default = ['kubric'],type=str, nargs='+')
 
     args = parser.parse_args()
 
@@ -132,6 +135,8 @@ if __name__ == '__main__':
         from configs.sintel import get_cfg
     elif args.stage == 'kitti':
         from configs.kitti import get_cfg
+    elif args.stage == 'kubric':
+        from configs.kubric import get_cfg
 
     cfg = get_cfg()
     cfg.update(vars(args))
